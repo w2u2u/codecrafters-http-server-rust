@@ -1,6 +1,6 @@
 // Uncomment this block to pass the first stage
 use std::{
-    io::{self, Write},
+    io::{self, Read, Write},
     net::{TcpListener, TcpStream},
 };
 
@@ -26,7 +26,20 @@ fn main() {
 }
 
 fn handle_stream(stream: &mut TcpStream) -> io::Result<()> {
-    let _ = stream.write("HTTP/1.1 200 OK\r\n\r\n".as_bytes())?;
+    let mut buffer = [0; 1024];
+    let _ = stream.read(&mut buffer)?;
+    let buffer_str = String::from_utf8_lossy(&buffer);
+    let buffer_lines: Vec<&str> = buffer_str.split("\r\n").collect();
+    let start_line: Vec<&str> = buffer_lines[0].split_whitespace().collect();
+
+    let response = match start_line[1] {
+        "/" => "HTTP/1.1 200 OK\r\n\r\n",
+        _ => "HTTP/1.1 404 Not Found\r\n\r\n",
+    };
+
+    println!("{}", response);
+
+    let _ = stream.write(response.as_bytes())?;
     stream.flush()?;
 
     Ok(())
