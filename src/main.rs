@@ -33,14 +33,41 @@ fn handle_stream(stream: &mut TcpStream) -> io::Result<()> {
     let start_line: Vec<&str> = buffer_lines[0].split_whitespace().collect();
 
     let response = match start_line[1] {
-        "/" => "HTTP/1.1 200 OK\r\n\r\n",
-        _ => "HTTP/1.1 404 Not Found\r\n\r\n",
+        "/" => response_ok(""),
+        path if path.starts_with("/echo") => response_echo(path),
+        _ => response_not_found(),
     };
-
-    println!("{}", response);
 
     let _ = stream.write(response.as_bytes())?;
     stream.flush()?;
 
     Ok(())
+}
+
+fn response_echo(path: &str) -> String {
+    let paths: Vec<&str> = path.split('/').collect();
+
+    if paths.len() > 2 {
+        let content = paths[2..].join("/");
+
+        response_ok(&content)
+    } else {
+        response_not_found()
+    }
+}
+
+fn response_ok(content: &str) -> String {
+    if content.is_empty() {
+        "HTTP/1.1 200 OK\r\n\r\n".to_string()
+    } else {
+        format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{}",
+            content.len(),
+            content
+        )
+    }
+}
+
+fn response_not_found() -> String {
+    "HTTP/1.1 404 Not Found\r\n\r\n".to_string()
 }
