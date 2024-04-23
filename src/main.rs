@@ -44,16 +44,19 @@ fn main() {
 
 fn handle_stream(stream: &mut TcpStream, dir: Arc<Mutex<String>>) -> io::Result<()> {
     let mut buffer = [0; 1024];
-    let _ = stream.read(&mut buffer)?;
-    let buffer_str = String::from_utf8_lossy(&buffer);
-    let buffer_lines: Vec<&str> = buffer_str.split("\r\n").collect();
+    let buffer_size = stream.read(&mut buffer)?;
+    let buffer_str = String::from_utf8_lossy(&buffer[..buffer_size]);
+    let buffer_lines: Vec<&str> = buffer_str.trim().split("\r\n").collect();
     let start_lines: Vec<&str> = buffer_lines[0].split_whitespace().collect();
 
-    let response = match start_lines[1] {
-        "/" => response_ok("", ""),
-        path if path.starts_with("/echo") => response_echo(path),
-        path if path.starts_with("/user-agent") => response_user_agent(buffer_lines[2]),
-        path if path.starts_with("/files") => response_files(path, dir),
+    let response = match (start_lines[0], start_lines[1]) {
+        ("GET", "/") => response_ok("", ""),
+        ("GET", path) if path.starts_with("/echo") => handle_echo(path),
+        ("GET", path) if path.starts_with("/user-agent") => handle_user_agent(buffer_lines[2]),
+        ("GET", path) if path.starts_with("/files") => handle_read_file(path, dir),
+        ("POST", path) if path.starts_with("/files") => {
+            handle_write_file(path, dir, buffer_lines.last().unwrap())
+        }
         _ => response_not_found(),
     };
 
@@ -63,7 +66,7 @@ fn handle_stream(stream: &mut TcpStream, dir: Arc<Mutex<String>>) -> io::Result<
     Ok(())
 }
 
-fn response_echo(path: &str) -> String {
+fn handle_echo(path: &str) -> String {
     let paths: Vec<&str> = path.split('/').collect();
 
     if paths.len() > 2 {
@@ -75,11 +78,11 @@ fn response_echo(path: &str) -> String {
     }
 }
 
-fn response_user_agent(user_agent: &str) -> String {
+fn handle_user_agent(user_agent: &str) -> String {
     response_ok("text/plain", user_agent.split_whitespace().last().unwrap())
 }
 
-fn response_files(path: &str, directory: Arc<Mutex<String>>) -> String {
+fn handle_read_file(path: &str, directory: Arc<Mutex<String>>) -> String {
     let paths: Vec<&str> = path.split('/').collect();
     let dir = directory.lock().unwrap();
     let file_path = format!("{}{}", dir, paths.last().unwrap());
@@ -87,6 +90,18 @@ fn response_files(path: &str, directory: Arc<Mutex<String>>) -> String {
 
     if let Ok(file_content) = file {
         return response_ok("application/octet-stream", &file_content);
+    }
+
+    response_not_found()
+}
+
+fn handle_write_file(path: &str, directory: Arc<Mutex<String>>, content: &str) -> String {
+    let paths: Vec<&str> = path.split('/').collect();
+    let dir = directory.lock().unwrap();
+    let file_path = format!("{}{}", dir, paths.last().unwrap());
+
+    if fs::write(file_path, content).is_ok() {
+        return response_created();
     }
 
     response_not_found()
@@ -103,6 +118,10 @@ fn response_ok(content_type: &str, content: &str) -> String {
             content
         )
     }
+}
+
+fn response_created() -> String {
+    "HTTP/1.1 201 CREATED\r\n\r\n".to_string()
 }
 
 fn response_not_found() -> String {
