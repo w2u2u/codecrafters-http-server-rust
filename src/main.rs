@@ -1,4 +1,3 @@
-// Uncomment this block to pass the first stage
 use std::{
     env, fs,
     io::{self, Read, Write},
@@ -9,20 +8,9 @@ use std::{
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    let dir = Arc::new(Mutex::new(String::new()));
+    let directory = parse_directory_arg(&args);
 
-    for (i, arg) in args.iter().enumerate() {
-        if arg == "--directory" && args.get(i + 1).is_some() {
-            let mut d = dir.lock().unwrap();
-            *d = args[i + 1].to_string();
-            break;
-        }
-    }
-
-    // You can use print statements as follows for debugging, they'll be visible when running tests.
     println!("Logs from your program will appear here!");
-
-    // Uncomment this block to pass the first stage
 
     let listener = TcpListener::bind("127.0.0.1:4221").unwrap();
 
@@ -30,16 +18,33 @@ fn main() {
         match stream {
             Ok(mut stream) => {
                 println!("accepted new connection");
-                let d = Arc::clone(&dir);
+
+                let dir = Arc::clone(&directory);
+
                 thread::spawn(move || {
-                    handle_stream(&mut stream, d).unwrap();
+                    if let Err(e) = handle_stream(&mut stream, dir) {
+                        eprintln!("error handling stream: {}", e);
+                    }
                 });
             }
             Err(e) => {
-                println!("error: {}", e);
+                eprintln!("error accepting connection: {}", e);
             }
         }
     }
+}
+
+fn parse_directory_arg(args: &[String]) -> Arc<Mutex<String>> {
+    let mut dir = String::new();
+
+    for (i, arg) in args.iter().enumerate() {
+        if arg == "--directory" && args.get(i + 1).is_some() {
+            dir = args[i + 1].clone();
+            break;
+        }
+    }
+
+    Arc::new(Mutex::new(dir))
 }
 
 fn handle_stream(stream: &mut TcpStream, dir: Arc<Mutex<String>>) -> io::Result<()> {
@@ -47,17 +52,10 @@ fn handle_stream(stream: &mut TcpStream, dir: Arc<Mutex<String>>) -> io::Result<
     let buffer_size = stream.read(&mut buffer)?;
     let buffer_str = String::from_utf8_lossy(&buffer[..buffer_size]);
     let buffer_lines: Vec<&str> = buffer_str.trim().split("\r\n").collect();
-    let start_lines: Vec<&str> = buffer_lines[0].split_whitespace().collect();
 
-    let response = match (start_lines[0], start_lines[1]) {
-        ("GET", "/") => response_ok("", ""),
-        ("GET", path) if path.starts_with("/echo") => handle_echo(path),
-        ("GET", path) if path.starts_with("/user-agent") => handle_user_agent(buffer_lines[2]),
-        ("GET", path) if path.starts_with("/files") => handle_read_file(path, dir),
-        ("POST", path) if path.starts_with("/files") => {
-            handle_write_file(path, dir, buffer_lines.last().unwrap())
-        }
-        _ => response_not_found(),
+    let response = match parse_request(&buffer_lines) {
+        Ok(request) => handle_request(request, &dir),
+        Err(_) => response_not_found(),
     };
 
     let _ = stream.write(response.as_bytes())?;
@@ -66,45 +64,82 @@ fn handle_stream(stream: &mut TcpStream, dir: Arc<Mutex<String>>) -> io::Result<
     Ok(())
 }
 
+struct Request<'a> {
+    method: &'a str,
+    path: &'a str,
+    user_agent: Option<&'a str>,
+    body: &'a str,
+}
+
+fn parse_request<'a>(lines: &'a [&'a str]) -> Result<Request<'a>, ()> {
+    let start_line = lines.first().ok_or(())?;
+    let start_line_parts: Vec<&str> = start_line.split_whitespace().collect();
+
+    if start_line_parts.len() < 2 {
+        return Err(());
+    }
+
+    let method = start_line_parts[0];
+    let path = start_line_parts[1];
+    let user_agent = lines.get(2).copied();
+    let body = lines.last().unwrap_or(&"");
+
+    Ok(Request {
+        method,
+        path,
+        user_agent,
+        body,
+    })
+}
+
+fn handle_request(request: Request, dir: &Arc<Mutex<String>>) -> String {
+    match (request.method, request.path) {
+        ("GET", "/") => response_ok("", ""),
+        ("GET", path) if path.starts_with("/echo") => handle_echo(path),
+        ("GET", path) if path.starts_with("/user-agent") => handle_user_agent(request.user_agent),
+        ("GET", path) if path.starts_with("/files") => handle_read_file(path, dir),
+        ("POST", path) if path.starts_with("/files") => handle_write_file(path, dir, request.body),
+        _ => response_not_found(),
+    }
+}
+
 fn handle_echo(path: &str) -> String {
-    let paths: Vec<&str> = path.split('/').collect();
+    let content = path.trim_start_matches("/echo/");
 
-    if paths.len() > 2 {
-        let content = paths[2..].join("/");
+    response_ok("text/plain", content)
+}
 
-        response_ok("text/plain", &content)
+fn handle_user_agent(user_agent: Option<&str>) -> String {
+    if let Some(user_agent) = user_agent {
+        response_ok(
+            "text/plain",
+            user_agent.split_whitespace().last().unwrap_or(""),
+        )
     } else {
         response_not_found()
     }
 }
 
-fn handle_user_agent(user_agent: &str) -> String {
-    response_ok("text/plain", user_agent.split_whitespace().last().unwrap())
-}
+fn handle_read_file(path: &str, directory: &Arc<Mutex<String>>) -> String {
+    let file_name = path.split('/').last().unwrap_or("");
+    let file_path = format!("{}{}", directory.lock().unwrap(), file_name);
 
-fn handle_read_file(path: &str, directory: Arc<Mutex<String>>) -> String {
-    let paths: Vec<&str> = path.split('/').collect();
-    let dir = directory.lock().unwrap();
-    let file_path = format!("{}{}", dir, paths.last().unwrap());
-    let file = fs::read_to_string(file_path);
-
-    if let Ok(file_content) = file {
-        return response_ok("application/octet-stream", &file_content);
+    if let Ok(file_content) = fs::read_to_string(file_path) {
+        response_ok("application/octet-stream", &file_content)
+    } else {
+        response_not_found()
     }
-
-    response_not_found()
 }
 
-fn handle_write_file(path: &str, directory: Arc<Mutex<String>>, content: &str) -> String {
-    let paths: Vec<&str> = path.split('/').collect();
-    let dir = directory.lock().unwrap();
-    let file_path = format!("{}{}", dir, paths.last().unwrap());
+fn handle_write_file(path: &str, directory: &Arc<Mutex<String>>, content: &str) -> String {
+    let file_name = path.split('/').last().unwrap_or("");
+    let file_path = format!("{}{}", directory.lock().unwrap(), file_name);
 
     if fs::write(file_path, content).is_ok() {
-        return response_created();
+        response_created()
+    } else {
+        response_not_found()
     }
-
-    response_not_found()
 }
 
 fn response_ok(content_type: &str, content: &str) -> String {
