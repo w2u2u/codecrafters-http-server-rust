@@ -2,6 +2,7 @@
 use std::{
     io::{self, Read, Write},
     net::{TcpListener, TcpStream},
+    thread,
 };
 
 fn main() {
@@ -16,7 +17,9 @@ fn main() {
         match stream {
             Ok(mut stream) => {
                 println!("accepted new connection");
-                handle_stream(&mut stream).unwrap();
+                thread::spawn(move || {
+                    handle_stream(&mut stream).unwrap();
+                });
             }
             Err(e) => {
                 println!("error: {}", e);
@@ -30,9 +33,9 @@ fn handle_stream(stream: &mut TcpStream) -> io::Result<()> {
     let _ = stream.read(&mut buffer)?;
     let buffer_str = String::from_utf8_lossy(&buffer);
     let buffer_lines: Vec<&str> = buffer_str.split("\r\n").collect();
-    let start_line: Vec<&str> = buffer_lines[0].split_whitespace().collect();
+    let start_lines: Vec<&str> = buffer_lines[0].split_whitespace().collect();
 
-    let response = match start_line[1] {
+    let response = match start_lines[1] {
         "/" => response_ok(""),
         path if path.starts_with("/echo") => response_echo(path),
         path if path.starts_with("/user-agent") => response_user_agent(buffer_lines[2]),
