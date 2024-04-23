@@ -35,6 +35,7 @@ fn handle_stream(stream: &mut TcpStream) -> io::Result<()> {
     let response = match start_line[1] {
         "/" => response_ok(""),
         path if path.starts_with("/echo") => response_echo(path),
+        path if path.starts_with("/user-agent") => response_user_agent(buffer_lines[2]),
         _ => response_not_found(),
     };
 
@@ -54,6 +55,10 @@ fn response_echo(path: &str) -> String {
     } else {
         response_not_found()
     }
+}
+
+fn response_user_agent(user_agent: &str) -> String {
+    response_ok(user_agent.split_whitespace().last().unwrap())
 }
 
 fn response_ok(content: &str) -> String {
